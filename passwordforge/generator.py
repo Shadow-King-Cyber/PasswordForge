@@ -195,13 +195,27 @@ class PasswordForge:
             Resultado con todas las combinaciones.
         """
         resolver = PatternResolver(pattern, default_charset=charset)
-        passwords = resolver.resolve_all()
+        # Para patrones grandes (>1M), usar generador lazy y guardar en stream
+        if resolver.estimate_size() > 1_000_000:
+            passwords = list(resolver._resolve_lazy())
+        else:
+            passwords = resolver.resolve_all()
         return GenerationResult(
             passwords=passwords,
             total=len(passwords),
             pattern=pattern,
             constraints_desc=resolver.describe(),
         )
+
+    @staticmethod
+    def from_pattern_stream(pattern: str, charset: str | None = None) -> tuple[PatternResolver, Iterator[str]]:
+        """Retorna un resolver y generador perezoso — no carga en memoria.
+
+        Returns:
+            Tupla (resolver, iterator de contraseñas).
+        """
+        resolver = PatternResolver(pattern, default_charset=charset)
+        return resolver, resolver._resolve_lazy()
 
     @staticmethod
     def from_prefix(prefix: str, length: int, charset: str = "alnum") -> GenerationResult:

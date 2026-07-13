@@ -204,10 +204,39 @@ def main():
         elif args.charset != "alnum":
             charset = Charset.from_name(args.charset)
 
+        resolver = PatternResolver(args.pattern, default_charset=charset)
+        total_est = resolver.estimate_size()
         print(f"[*] Patrón: {args.pattern}")
-        if charset:
-            print(f"[*] Charset: {args.charset} ({len(charset)} caracteres)")
-        result = PasswordForge.from_pattern(args.pattern, charset=charset)
+        print(f"[*] Combinaciones estimadas: {total_est:,}")
+
+        # Para patrones grandes, stream directo a archivo o stdout
+        if total_est > 5_000_000:
+            print(f"[*] Patrón grande — modo streaming activado")
+            _, iterator = PasswordForge.from_pattern_stream(args.pattern, charset=charset)
+
+            if args.output:
+                path = Path(args.output)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                count = 0
+                with open(path, "w", encoding="utf-8") as f:
+                    for pw in iterator:
+                        f.write(pw + "\n")
+                        count += 1
+                duracion = time.time() - inicio
+                print(f"[+] Guardadas {count:,} contraseñas en '{path}'")
+                print(f"[+] Tiempo: {duracion:.2f}s")
+                if count > 0:
+                    print(f"[+] Velocidad: {count / max(duracion, 0.001):.0f} contraseñas/seg")
+            else:
+                count = 0
+                for pw in iterator:
+                    print(pw)
+                    count += 1
+                duracion = time.time() - inicio
+                print(f"\n[+] Total: {count:,} contraseñas en {duracion:.2f}s", file=sys.stderr)
+            return
+        else:
+            result = PasswordForge.from_pattern(args.pattern, charset=charset)
 
     # Modo inteligente
     elif args.smart:
