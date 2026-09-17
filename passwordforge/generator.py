@@ -18,18 +18,32 @@ class GenerationResult:
     """Resultado de una generación de wordlist.
 
     Attributes:
-        passwords: Lista de contraseñas generadas.
+        passwords: Lista de contraseñas generadas (se materializa bajo demanda
+            si la generación fue en modo stream).
         total: Total de contraseñas.
         pattern: Patrón utilizado (si aplica).
         constraints: Descripción de constraints.
     """
-    passwords: list[str] = field(default_factory=list)
+    _passwords: list[str] = field(default_factory=list, repr=False)
     total: int = 0
     pattern: str | None = None
     constraints_desc: str = ""
+    _lazy_stream: Iterator[str] | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def passwords(self) -> list[str]:
+        """Lista de contraseñas; materializa el stream lazy solo al ser accedida."""
+        if self._lazy_stream is not None:
+            for pw in self._lazy_stream:
+                self._passwords.append(pw)
+            self._lazy_stream = None
+        return self._passwords
 
     def save(self, filepath: str | Path) -> int:
         """Guarda las contraseñas en un archivo.
+
+        Si la generación es perezosa, escribe en streaming sin materializar todo
+        en memoria.
 
         Args:
             filepath: Ruta del archivo de salida.
@@ -39,10 +53,18 @@ class GenerationResult:
         """
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)
+        count = 0
         with open(path, "w", encoding="utf-8") as f:
-            for pw in self.passwords:
-                f.write(pw + "\n")
-        return len(self.passwords)
+            if self._lazy_stream is not None:
+                for pw in self._lazy_stream:
+                    f.write(pw + "\n")
+                    count += 1
+                self._lazy_stream = None
+            else:
+                for pw in self._passwords:
+                    f.write(pw + "\n")
+                    count += 1
+        return count
 
     def summary(self) -> str:
         """Retorna un resumen de la generación."""
@@ -121,13 +143,13 @@ class PasswordGenerator:
                     passwords.append(candidate)
                     if len(passwords) >= max_results:
                         return GenerationResult(
-                            passwords=passwords,
+                            _passwords=passwords,
                             total=len(passwords),
                             constraints_desc=self.constraints.describe(),
                         )
 
         return GenerationResult(
-            passwords=passwords,
+            _passwords=passwords,
             total=len(passwords),
             constraints_desc=self.constraints.describe(),
         )
@@ -141,8 +163,57 @@ class PasswordGenerator:
         Yields:
             Contraseñas que cumplan las constraints.
         """
-        result = self.generate(max_results=max_results)
-        yield from result.passwords
+        min_len, max_len = self.constraints.get_effective_length_range()
+        charset = self.constraints.charset.chars if self.constraints.charset else Charset.ALNUM
+        prefix = self.constraints.prefix.prefix if self.constraints.prefix else ""
+        suffix = self.constraints.suffix.suffix if self.constraints.suffix else ""
+        pos_constraint = self.constraints.position
+
+        count = 0
+        for length in range(min_len, max_len + 1):
+            position_chars: list[str] = []
+            for i in range(length):
+                if i < len(prefix):
+                    position_chars.append(prefix[i])
+                elif i >= length - len(suffix):
+                    suffix_idx = i - (length - len(suffix))
+                    position_chars.append(suffix[suffix_idx])
+                elif i in pos_constraint.posiciones:
+                    position_chars.append(pos_constraint.posiciones[i])
+                else:
+                    position_chars.append(charset)
+
+            for combo in itertools.product(*position_chars):
+                candidate = "".join(combo)
+                if self._validate(candidate):
+                    yield candidate
+                    count += 1
+                    if count >= max_results:
+                        return
+
+    def estimate_size(self) -> int:
+        """Estima el número total de contraseñas sin generarlas."""
+        min_len, max_len = self.constraints.get_effective_length_range()
+        charset = self.constraints.charset.chars if self.constraints.charset else Charset.ALNUM
+        prefix = self.constraints.prefix.prefix if self.constraints.prefix else ""
+        suffix = self.constraints.suffix.suffix if self.constraints.suffix else ""
+        pos_constraint = self.constraints.position
+
+        total = 0
+        for length in range(min_len, max_len + 1):
+            combos = 1
+            for i in range(length):
+                if i < len(prefix):
+                    choices = 1
+                elif i >= length - len(suffix):
+                    choices = 1
+                elif i in pos_constraint.posiciones:
+                    choices = len(pos_constraint.posiciones[i])
+                else:
+                    choices = len(charset)
+                combos *= choices
+            total += combos
+        return total
 
     def _validate(self, password: str) -> bool:
         """Valida una candidata contra todas las constraints."""
@@ -195,14 +266,18 @@ class PasswordForge:
             Resultado con todas las combinaciones.
         """
         resolver = PatternResolver(pattern, default_charset=charset)
-        # Para patrones grandes (>1M), usar generador lazy y guardar en stream
+        # Para patrones grandes (>1M), generar en streaming sin materializar en memoria
         if resolver.estimate_size() > 1_000_000:
-            passwords = list(resolver._resolve_lazy())
-        else:
-            passwords = resolver.resolve_all()
+            return GenerationResult(
+                _passwords=[],
+                total=resolver.estimate_size(),
+                pattern=pattern,
+                constraints_desc=resolver.describe(),
+                _lazy_stream=resolver._resolve_lazy(),
+            )
         return GenerationResult(
-            passwords=passwords,
-            total=len(passwords),
+            _passwords=resolver.resolve_all(),
+            total=resolver.estimate_size(),
             pattern=pattern,
             constraints_desc=resolver.describe(),
         )

@@ -195,6 +195,7 @@ def main():
 
     inicio = time.time()
     result = None
+    gen = None
 
     # Modo patrón
     if args.pattern:
@@ -288,11 +289,13 @@ def main():
 
     # Solo estimar
     if args.estimate:
-        if result:
-            print(f"\n[*] Estimación: {result.total:,} contraseñas")
-        elif args.pattern:
-            resolver = PatternResolver(args.pattern)
+        if args.pattern:
+            resolver = PatternResolver(args.pattern, default_charset=charset)
             print(f"\n[*] Estimación: {resolver.estimate_size():,} combinaciones")
+        elif gen is not None:
+            print(f"\n[*] Estimación: {gen.estimate_size():,} contraseñas")
+        elif result is not None:
+            print(f"\n[*] Estimación: {result.total:,} contraseñas")
         else:
             print("[-] Se requiere un patrón o constraints para estimar")
         return
